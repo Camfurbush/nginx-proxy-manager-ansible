@@ -33,13 +33,17 @@ options:
         required: true
         type: str
     host_port:
-        description: Forward Port 
+        description: Forward Port
         required: false
         type: int
     ssl_forced:
         description: Is SSL Forced?
         required: false
         type: bool
+    certificate_name:
+        description: ID of certificate to use
+        required: false
+        type: str
     state:
         description: Whether to create (present), or remove (absent) a proxy host.
         required: false
@@ -55,6 +59,7 @@ EXAMPLES = r'''
     domain: "domain_name.example.com"
     host: "172.32.0.1"
     ssl_forced: True
+    certificate_name: 1
     state: present
 
 # delete proxy host
@@ -63,6 +68,7 @@ EXAMPLES = r'''
     url: "http://192.168.0.1:81/api"
     token: "npm_access_token"
     domain: "domain_name.example.com"
+    certificate_name: 1
     host: "172.32.0.1"
     state: absent
 '''
@@ -99,12 +105,12 @@ def build_url(api_url, action, item_id=None):
         return  "%s/nginx/certificates/%s" % (api_url, item_id), "DELETE"
 
 def http_request(api_url, token, action, data=None, item_id=None):
-    
+
     if item_id is None:
         url, method = build_url(api_url, action)
     else:
         url, method = build_url(api_url, action, item_id)
-    
+
     headers = dict()
     headers["Authorization"] = "Bearer %s" % token
     headers["Content-Type"] = "application/json"
@@ -120,7 +126,7 @@ def http_request(api_url, token, action, data=None, item_id=None):
 
 def search_proxy_host(module, api_url, token, domain_name):
     response, info = http_request(api_url, token, action="search-host")
-    
+
     status_code = info
     if status_code >= 400:
         module.fail_json("Failed to connect to api host to search for proxy_host. Info: %s" % response)
@@ -129,19 +135,26 @@ def search_proxy_host(module, api_url, token, domain_name):
     for search in json.loads(response.text):
         if domain_name in search["domain_names"]:
             result_search = search
-    
+
     # Return proxy_host
     return result_search
 
-def create_proxy_host(module, api_url, token, domain_name, forward_host, forward_port, ssl_forced):
+def create_proxy_host(module, api_url, token, domain_name, forward_host, forward_port, ssl_forced, certificate_name):
+
+    if certificate_name:
+        search=search_certificate(module, api_url, token, certificate_name)
+        certificate_id=search.id
+    else:
+        certificate_id="new"
     # Create Proxy-host
-    
+
+
     proxy_host = search_proxy_host(module, api_url, token, domain_name)
 
     if len(proxy_host) > 0:
         # If the Proxy-host already exists, do nothing
         return 0, "Proxy Host %s already exists" % domain_name
-        
+
     else:
         forward_scheme = "http"
 
@@ -151,7 +164,7 @@ def create_proxy_host(module, api_url, token, domain_name, forward_host, forward
                 "forward_host": forward_host,
                 "forward_port": forward_port,
                 "forward_scheme": forward_scheme,
-                "certificate_id": "new",
+                "certificate_id": certificate_id,
                 "ssl_forced": ssl_forced,
                 "allow_websocket_upgrade": True,
             })
@@ -174,7 +187,7 @@ def create_proxy_host(module, api_url, token, domain_name, forward_host, forward
 
 def delete_proxy_host(module, api_url, token, domain_name):
     # Delete Proxy-host
-   
+
     proxy_host = search_proxy_host(module, api_url, token, domain_name)
 
     if len(proxy_host) > 0:
@@ -182,7 +195,7 @@ def delete_proxy_host(module, api_url, token, domain_name):
         if proxy_host['certificate_id'] > 0:
             # IF the Proxy-host have certificate
             rc, result = delete_certificate(module, api_url, token, item_id=proxy_host['certificate_id'])
-            
+
             if rc == 0 or rc == 1:
                 response, status_code = http_request(api_url, token, item_id=proxy_host['id'], action="delete-host")
 
@@ -208,7 +221,7 @@ def delete_proxy_host(module, api_url, token, domain_name):
 
 def search_certificate(module, api_url, token, domain_name=None, item_id=None):
     response, info = http_request(api_url, token, action="search-ssl")
-    
+
     status_code = info
     if status_code >= 400:
         module.fail_json("Failed to search for certificate. Info: %s" % response)
@@ -218,7 +231,7 @@ def search_certificate(module, api_url, token, domain_name=None, item_id=None):
         for search in json.loads(response.text):
             if domain_name in search["domain_names"]:
                 result_search = search
-        
+
     elif item_id is not None:
         for search in json.loads(response.text):
             if item_id == search["id"]:
@@ -228,13 +241,13 @@ def search_certificate(module, api_url, token, domain_name=None, item_id=None):
     return result_search
 
 def delete_certificate(module, api_url, token, item_id):
-    
+
     certificate = search_certificate(module, api_url, token, item_id=item_id)
 
     if len(certificate) > 0:
         # If the certificate already exists, do remove
         response, info = http_request(api_url, token, item_id=item_id, action="delete-ssl")
-        
+
         status_code = info
         if status_code == 200:
             result = "Certificate id: %s remowed" % item_id
@@ -257,6 +270,7 @@ def main():
             host=dict(type='str', required=True),
             host_port=dict(type='int', required=False, default=80),
             ssl_forced=dict(type='bool', required=False, default=True),
+            certificate_name=dict(type='str', required=False),
             state=dict(type='str', default='present', choices=['absent', 'present']),
         ),
     )
@@ -267,10 +281,11 @@ def main():
     forward_host = module.params['host']
     forward_port = module.params['host_port']
     ssl_forced = module.params['ssl_forced']
+    certificate_name = module.params['certificate_name']
     state = module.params['state']
 
     if state == 'present':
-        (rc, result) = create_proxy_host(module, api_url, token, domain_name, forward_host, forward_port, ssl_forced)
+        (rc, result) = create_proxy_host(module, api_url, token, domain_name, forward_host, forward_port, ssl_forced, certificate_name)
     elif state == 'absent':
         (rc, result) = delete_proxy_host(module, api_url, token, domain_name)
 
